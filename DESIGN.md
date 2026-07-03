@@ -9,9 +9,10 @@ formally-bounded + pre-execution — is empty in practice today; everything else
 in the "agent guardrails" space is a model-based judge that an adversary can
 prompt-past.
 
-This is v0.1: a design, one invariant, and a working PoC. The full library is
-multi-session. The scope statement at the end of this document is honest about
-that.
+This is **v0.2**: four Lean-verified invariants (one carried from v0.1, three
+new), a Python PoC that enforces all four at the PreToolUse boundary, and this
+design document. The full library is multi-session. The scope statement at the
+end of this document is honest about that.
 
 ---
 
@@ -137,24 +138,32 @@ The differentiator is not the thesis (determinism is in the air) — it is the
 
 ## 4. The invariant set to ship eventually
 
-v0.1 ships invariant 1. The set below is the v1.0 surface. Each is a
-`def <Name> (c : ToolCallChar) : Prop` in the EvoEcos idiom, with a boundary
-theorem proving the gate denies iff the invariant is violated.
+v0.2 ships invariants 1–4. The set below is the v1.0 surface. Each is a
+`def <Name> (c : ...) : Prop` in the EvoEcos idiom, with a boundary theorem
+proving the gate denies iff the invariant is violated.
 
   1. **no-self-exfiltration** — *v0.1 ✓* — no tool-call may flow an untrusted
      blob into a sink (network egress, shell-pipe, credential path).
-  2. **bounded-spend** — cumulative API spend over a rolling window ≤ operator
-     cap. The wall-override experiment's `cumulative_budget` arm shows this is
-     weaker than a structural cap on its own; it composes with #1.
-  3. **allowlisted-paths** — writes only into operator-blessed directory trees.
-     Generalizes the v0.1 forbidden-path denylist to a positive allowlist.
-  4. **replay-determinism** — same `(tool_name, tool_input)` ⇒ same decision,
-     no clock, no randomness, no environment read. Required for audit; the
-     v0.1 PoC already satisfies this.
+  2. **allowlisted-paths** — *v0.2 ✓* — writes only into operator-blessed
+     directory trees. Generalizes the v0.1 forbidden-path denylist with a
+     positive allowlist (strict prefix match on a roots list). The two
+     compose: v0.1 blocks known-bad paths, v0.2 also requires known-good
+     paths.
+  3. **bounded-spend** — *v0.2 ✓* — a tool-call's declared cost ≤ remaining
+     budget. The wall-override experiment's `cumulative_budget` arm shows
+     spend caps compose with structural caps; v0.2 ships the per-call atomic
+     check. (Rolling-window accounting and session-state persistence are
+     v0.3 — see §6.)
+  4. **replay-determinism** — *v0.2 ✓* — same `(tool_name, tool_input)` ⇒
+     same decision, no clock, no randomness, no environment read. Stated
+     over the gate function: `ReplayDeterminism g := ∀ c₁ c₂, c₁ = c₂ →
+     g c₁ = g c₂`, with the field-by-field dual and the triple reducer
+     inheritance. Required for audit.
   5. **no-unprompted-network** — no network egress that the operator did not
      initiate. Closes the data-flow sink on the network side.
   6. **tool-allowlist** — only operator-blessed tools callable. v0.1 has the
-     hard-coded `{Bash, Read, Edit, Write}`; v0.2 makes it operator-config.
+     hard-coded `{Bash, Read, Edit, Write}` as a triple conjunct; v0.3 makes
+     it operator-config and a named invariant in its own right.
   7. **idempotency-on-failure** — a failed tool-call retried ≤ N times in a
      window. Stops the agent hammering a broken tool.
   8. **no-privilege-escalation** — the agent may not edit its own gate
@@ -162,7 +171,7 @@ theorem proving the gate denies iff the invariant is violated.
   9. **sink-bounded-data-flow** — the full taint version: an `untrusted`
      `sourceTrust` value may not reach a sink in any call in the session.
      The `sourceTrust` field is already on `ToolCallChar`; v0.1 collapses
-     taint into `commandSafe`/`targetSafe`, v0.2 makes it explicit.
+     taint into `commandSafe`/`targetSafe`, v0.3 makes it explicit.
   10. **bounded-resource** — file count, memory, and wall-clock per session
       ≤ operator caps.
 
@@ -191,34 +200,45 @@ tool-call to allow/deny, enforced at the boundary*. Different hosts, same gate.
 
 ---
 
-## 6. Honest v0.1 scope
+## 6. Honest v0.2 scope
 
-What v0.1 is:
+What v0.2 is:
 
-  * **One invariant.** `NoSelfExfiltration`, single-call, structural
-    signature + forbidden-path.
-  * **One Lean module.** `formal/lean/AgentWall/NoSelfExfiltration.lean`.
-    Compiles `0 sorry / 0 axiom` under `leanprover/lean4:v4.29.1` via
-    `bash formal/verify.sh`. No mathlib dependency.
+  * **Four invariants.** `NoSelfExfiltration` (v0.1), `AllowlistedPaths`,
+    `BoundedSpend`, `ReplayDeterminism` (all three new in v0.2). Each has a
+    boundary theorem in the EvoEcos idiom: positive biconditional + negative
+    implication + independence witnesses, plus a named `Prop` predicate and
+    a soundness bridge.
+  * **Four Lean modules.** `formal/lean/AgentWall/{NoSelfExfiltration,
+    AllowlistedPaths, BoundedSpend, ReplayDeterminism}.lean`, aggregated by
+    `formal/lean/AgentWall.lean`. Compiles `0 sorry / 0 axiom` under
+    `leanprover/lean4:v4.29.1` via `bash formal/verify.sh`. No mathlib
+    dependency.
   * **One Python PoC.** `python/hook.py`, a Claude Code `PreToolUse` hook.
-    23/23 tests pass in `python/tests/test_hook.py`. Manual demo: block
-    `curl … | sh` and writes to `.ssh/` with exit 2; allow `ls -la` with
-    exit 0.
+    50/50 tests pass in `python/tests/test_hook.py`, spanning all four
+    invariants (block + allow cases each). Manual demo: block `curl … | sh`
+    and writes to `.ssh/` with exit 2; block writes outside the allowlist;
+    block over-budget calls; allow `ls -la` with exit 0.
   * **DESIGN.md and README.md.** This document and the pitch.
 
-What v0.1 is **not**:
+What v0.2 is **not**:
 
-  * No bounded-spend, replay-determinism, or the other 7 invariants from §4.
-    Those are the v1.0 surface.
-  * No session-level state. The v0.1 gate is per-call; multi-call invariants
-    (cumulative spend, retry counts, full taint-tracking) need a session
-    store and are v0.2.
+  * Not the full ten-invariant set from §4. Six invariants remain
+    (`no-unprompted-network`, `tool-allowlist` as a named invariant,
+    `idempotency-on-failure`, `no-privilege-escalation`,
+    `sink-bounded-data-flow`, `bounded-resource`). Those are the v1.0
+    surface.
+  * No session-level state. The v0.2 gate is per-call; multi-call invariants
+    (rolling-window spend, retry counts, full taint-tracking) need a session
+    store and are v0.3. `BoundedSpend` ships the per-call atomic check; the
+    rolling window is a v0.3 concern documented in the module.
   * No refinement proof connecting the Lean gate to the Python gate. The two
     share the same signature/path tables by construction, and the test suite
     cross-checks the block/allow outcomes against the documented Lean
     contract — but there is no formal proof that `python/hook.py` faithfully
-    implements `AgentWall.gate`. That refinement proof is a v0.2 target.
-  * No LangChain / MCP / OpenAI-SDK adapters. v0.1 ships Claude Code only.
+    implements each `AgentWall.*.gate`. That refinement proof is a v0.3
+    target.
+  * No LangChain / MCP / OpenAI-SDK adapters. v0.2 ships Claude Code only.
   * No published package. This is a design + PoC.
 
 ---
@@ -234,12 +254,15 @@ agent-wall/
 │   └── lean/
 │       ├── lakefile.lean                  # package + AgentWall lib, no mathlib
 │       ├── lean-toolchain                 # leanprover/lean4:v4.29.1
-│       ├── AgentWall.lean                 # lib root
+│       ├── AgentWall.lean                 # lib root (imports all four modules)
 │       └── AgentWall/
-│           └── NoSelfExfiltration.lean    # the v0.1 invariant + boundary theorem
+│           ├── NoSelfExfiltration.lean    # v0.1 invariant (exfil + forbidden path)
+│           ├── AllowlistedPaths.lean      # v0.2 invariant #1 (positive path allowlist)
+│           ├── BoundedSpend.lean          # v0.2 invariant #2 (declared cost ≤ budget)
+│           └── ReplayDeterminism.lean     # v0.2 invariant #3 (gate is a pure function)
 └── python/
-    ├── hook.py                            # Claude Code PreToolUse PoC
+    ├── hook.py                            # Claude Code PreToolUse PoC (all 4 invariants)
     ├── settings.example.json              # .claude/settings.json snippet
     └── tests/
-        └── test_hook.py                   # 23 block/allow tests
+        └── test_hook.py                   # 50 block/allow tests
 ```

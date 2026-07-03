@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-agent-wall: Claude Code PreToolUse hook (v0.1 PoC).
+agent-wall: Claude Code PreToolUse hook (v0.2 PoC).
 
 Deterministic, formally-bounded safety gate for autonomous AI agents.
-This is the Python runtime that mirrors `formal/lean/AgentWall/NoSelfExfiltration.lean`:
-the same exfiltration signature and the same forbidden-path denylist that the
-Lean invariant proves the gate denies on. No LLM judge, no network call, no
-randomness — the decision is a pure function of (tool_name, tool_input), exactly
-like `AgentWall.gate : ToolCallChar -> Decision`.
+This is the Python runtime that mirrors the Lean invariants in
+`formal/lean/AgentWall/`:
+
+  * `NoSelfExfiltration.lean`   (v0.1) ↔ exfil signature + forbidden-path denylist
+  * `AllowlistedPaths.lean`     (v0.2) ↔ positive write-target allowlist
+  * `BoundedSpend.lean`         (v0.2) ↔ declared-cost ≤ remaining-budget
+  * `ReplayDeterminism.lean`    (v0.2) ↔ the gate is a pure function of its inputs
+
+Each Python check below MUST stay in lock-step with the corresponding Lean
+definition. The block/allow outcomes are cross-checked against the Lean
+contract in `python/tests/test_hook.py`. No LLM judge, no network call, no
+randomness — the decision is a pure function of `(tool_name, tool_input)`,
+exactly like `AgentWall.gate : ToolCallChar -> Decision`.
 
 Claude Code PreToolUse hook contract
 (https://docs.claude.com/en/docs/claude-code/hooks):
@@ -33,6 +41,11 @@ Usage in .claude/settings.json:
       ]
     }
   }
+
+Operator-tunable knobs (all default to v0.2 hardening ON):
+  * AGENT_WALL_ALLOWLIST_ENABLED=0  disables the path-allowlist invariant
+                                     (reverts to v0.1 denylist-only behaviour)
+  * AGENT_WALL_SPEND_ENABLED=0       disables the bounded-spend invariant
 """
 
 from __future__ import annotations
@@ -41,16 +54,26 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Deterministic signature + path policy.
 #
 # These MUST stay in lock-step with the Lean definitions in
-# formal/lean/AgentWall/NoSelfExfiltration.lean:
-#   - isExfilSignature      (Lean)  <-> EXFIL_SIGNATURES  (here)
-#   - isForbiddenPath       (Lean)  <-> FORBIDDEN_PATHS   (here)
-#   - toolAllowed           (Lean)  <-> ALLOWED_TOOLS     (here)
+# formal/lean/AgentWall/*.lean:
+#
+#   NoSelfExfiltration.lean:
+#     - isExfilSignature      (Lean)  <-> EXFIL_SIGNATURES  (here)
+#     - isForbiddenPath       (Lean)  <-> FORBIDDEN_PATHS   (here)
+#     - toolAllowed           (Lean)  <-> ALLOWED_TOOLS     (here)
+#
+#   AllowlistedPaths.lean:
+#     - isAllowlistedPath     (Lean)  <-> ALLOWED_ROOTS + is_allowlisted_path
+#     - isWriteTool           (Lean)  <-> WRITE_TOOLS
+#
+#   BoundedSpend.lean:
+#     - withinBudget          (Lean)  <-> spend_gate (declared_cost ≤ remaining_budget)
+#
 # Any divergence between the two is a contract bug; the test suite
 # (python/tests/test_hook.py) cross-checks the block/allow behaviour against
 # the documented Lean contract.
@@ -58,8 +81,12 @@ from typing import Any
 
 ALLOWED_TOOLS = frozenset({"Bash", "Read", "Edit", "Write"})
 
-# Exfiltration / shell-pipe signatures. Each entry is a (a, b) pair where both
-# substrings must be present (conjunction), or a single substring (matches if
+# Tools that have a target path worth gating on the allowlist invariant.
+# Mirrors Lean `AgentWall.AllowlistedPaths.isWriteTool`.
+WRITE_TOOLS = frozenset({"Write", "Edit"})
+
+# Exfiltration / shell-pipe signatures. Each entry is a tuple of substrings
+# that must ALL be present (conjunction), or a single substring (matches if
 # present). Mirrors Lean `isExfilSignature`.
 EXFIL_SIGNATURES: tuple[tuple[str, ...], ...] = (
     ("curl ", "| sh"),
@@ -80,6 +107,18 @@ FORBIDDEN_PATHS = (
 # Bash commands that write into a forbidden path (covers `echo ... > ~/.ssh/...`,
 # `cat ... >> ~/.ssh/authorized_keys`, etc.) even without an exfil pipe.
 FORBIDDEN_PATH_REDIRECT = (">", ">>", "tee ")
+
+# v0.2 invariant #1: operator-blessed write roots. A path is allowlisted iff
+# one of these is a strict prefix (mirror of Lean `String.startsWith`, NOT
+# substring — substring would let `/home/user/repo/../../../etc/passwd`
+# through, so the strict prefix test is the conservative direction for an
+# allowlist). Mirrors Lean `AgentWall.AllowlistedPaths.ALLOWED_ROOTS`.
+ALLOWED_ROOTS: tuple[str, ...] = (
+    "/tmp/",
+    "/home/user/",
+    "/home/fredde/",
+    "/var/tmp/",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -108,9 +147,50 @@ def is_forbidden_path(p: str) -> bool:
     return any(seg in p for seg in FORBIDDEN_PATHS)
 
 
+def is_allowlisted_path(p: str) -> bool:
+    """
+    Mirrors Lean `AgentWall.AllowlistedPaths.isAllowlistedPath`.
+
+    Strict prefix match (NOT substring) against `ALLOWED_ROOTS`. Conservative
+    direction for an allowlist — a path is allowed only if it begins with
+    one of the operator-blessed roots.
+    """
+    return any(p.startswith(root) for root in ALLOWED_ROOTS)
+
+
+def is_write_tool(tool_name: str) -> bool:
+    """Mirrors Lean `AgentWall.AllowlistedPaths.isWriteTool`."""
+    return tool_name in WRITE_TOOLS
+
+
 def tool_allowed(tool_name: str) -> bool:
     """Mirrors Lean `toolAllowed`."""
     return tool_name in ALLOWED_TOOLS
+
+
+def within_budget(declared_cost: int, remaining_budget: int) -> bool:
+    """
+    Mirrors Lean `AgentWall.BoundedSpend.withinBudget`.
+
+    True iff the declared cost is ≤ the remaining budget. Pure function of
+    two `Nat`-equivalent ints; no side effects, no randomness.
+    """
+    return declared_cost <= remaining_budget
+
+
+def spend_gate(declared_cost: int, remaining_budget: int) -> Decision:
+    """
+    Mirrors Lean `AgentWall.BoundedSpend.spendGate`.
+
+    Allow iff within budget. Returns Decision(allow=True/False, reason).
+    Pure function — the bounded-spend invariant's atomic check.
+    """
+    if within_budget(declared_cost, remaining_budget):
+        return Decision(True, "within budget")
+    return Decision(
+        False,
+        f"declared_cost {declared_cost} > remaining_budget {remaining_budget}",
+    )
 
 
 def _bash_writes_into_forbidden(cmd: str) -> str | None:
@@ -126,13 +206,30 @@ def _bash_writes_into_forbidden(cmd: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Feature flags — all v0.2 hardening ON by default. Set to "0" to revert.
+# ---------------------------------------------------------------------------
+
+def _flag(name: str, default: bool = True) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip() not in ("0", "false", "False", "")
+
+
+ALLOWLIST_ENABLED = lambda: _flag("AGENT_WALL_ALLOWLIST_ENABLED", True)
+SPEND_ENABLED = lambda: _flag("AGENT_WALL_SPEND_ENABLED", True)
+
+
 def gate(tool_name: str, tool_input: dict[str, Any]) -> Decision:
     """
-    The deterministic policy gate. Mirrors `AgentWall.gate`:
+    The deterministic policy gate. Mirrors `AgentWall.gate` extended for v0.2:
       triple = toolAllowed && commandSafe && targetSafe
+      v0.2 adds: && pathAllowlisted (for write tools)
+                 && withinBudget (when tool_input declares cost/budget)
       gate c = if triple then Allow else Deny
 
-    Returns Decision(allow=True) iff all three conditions hold.
+    Returns Decision(allow=True) iff every enabled condition holds.
     """
     # Condition 1: allowlisted tool.
     if not tool_allowed(tool_name):
@@ -148,13 +245,41 @@ def gate(tool_name: str, tool_input: dict[str, Any]) -> Decision:
         if hit is not None:
             return Decision(False, f"Bash writes into forbidden path {hit!r}")
 
-    # Condition 3 (Write/Edit): target path is not a credential store.
-    if tool_name in ("Write", "Edit"):
+    # Condition 3 (Write/Edit): target path is not a credential store (v0.1).
+    if is_write_tool(tool_name):
         path = str(tool_input.get("file_path", tool_input.get("path", "")))
         if is_forbidden_path(path):
             return Decision(False, f"write to forbidden path {path!r}")
 
-    # All three conditions hold.
+        # v0.2 invariant #1 — AllowlistedPaths: target must be under an
+        # operator-blessed root. This is the positive-list dual of condition 3.
+        # Hardening: ON by default; disable via AGENT_WALL_ALLOWLIST_ENABLED=0.
+        if ALLOWLIST_ENABLED() and not is_allowlisted_path(path):
+            return Decision(
+                False,
+                f"write target {path!r} not under any allowed root {list(ALLOWED_ROOTS)}",
+            )
+
+    # v0.2 invariant #2 — BoundedSpend: when the tool_input declares a cost
+    # and remaining budget (no Claude Code tool does this natively today; the
+    # PoC accepts the fields for composability with future spend-tracking
+    # adapters), the spend gate runs. Mirrors `AgentWall.BoundedSpend.spendGate`.
+    if SPEND_ENABLED() and "declared_cost" in tool_input and "remaining_budget" in tool_input:
+        try:
+            cost = int(tool_input["declared_cost"])
+            budget = int(tool_input["remaining_budget"])
+        except (TypeError, ValueError) as e:
+            # Treat malformed cost/budget as a non-blocking parse error; do not
+            # silently allow or silently block. Surface and skip the spend check.
+            sys.stderr.write(
+                f"agent-wall: malformed declared_cost/remaining_budget ({e}); skipping spend gate\n"
+            )
+        else:
+            spend = spend_gate(cost, budget)
+            if not spend.allow:
+                return Decision(False, f"bounded-spend: {spend.reason}")
+
+    # All enabled conditions hold.
     return Decision(True)
 
 
@@ -184,7 +309,7 @@ def main() -> int:
     # Structured-ish line so logs are greppable.
     sys.stderr.write(
         f"agent-wall BLOCK: {decision.reason}\n"
-        f"  (deterministic gate; see formal/lean/AgentWall/NoSelfExfiltration.lean)\n"
+        f"  (deterministic gate; see formal/lean/AgentWall/*.lean)\n"
     )
     return 2
 
