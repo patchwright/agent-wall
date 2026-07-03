@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Two jobs that machine-enforce the v0.2 security claims:
+#
+#   formal — the Lean 0 sorry / 0 axiom gate. The repo's verify.sh already
+#            exits non-zero on regression, but the adversarial review called
+#            the 0/0 claim "author-attested, not independently verified."
+#            This job makes it machine-verified on every push so the claim
+#            moves from author-attested to CI-attested.
+#
+#   python — pytest + ruff + mypy --strict on the runtime hook. Adds the
+#            type/lint discipline the hook was missing, plus a gate
+#            spot-check so a byte-level behavior change to the gate logic
+#            surfaces here before a release.
+
+permissions:
+  contents: read
+
+jobs:
+  formal:
+    name: Formal (Lean 0/0 gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install elan — Lean's toolchain manager — via the official install
+      # script. We use elan-script rather than the `leanprover/setup-lean`
+      # action for three reasons:
+      #   1. The repo's own `formal/verify.sh` instructs humans to install
+      #      Lean with this exact command — CI matches local setup one-line,
+      #      no surprise drift between local + CI toolchains.
+      #   2. elan reads `formal/lean/lean-toolchain` (pinned to
+      #      leanprover/lean4:v4.29.1) automatically when `lake` runs, so
+      #      the pin is enforced by the repo, not by a CI-only override.
+      #   3. No dependency on a third-party action that could be abandoned
+      #      or change pin semantics; the install script is stable + owned
+      #      by leanprover.
+      # `--default-toolchain none` defers the toolchain pick to the
+      # lean-toolchain file at build time.
+      - name: Install elan
+        run: |
+          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Lean version
+        run: |
+          echo "lean-toolchain pins: $(cat formal/lean/lean-toolchain)"
+          lean --version | head -1
+
+      - name: Run formal/verify.sh
+        # `set +e` so the next step can read the log even if verify.sh
+        # fails; the job-level gate is the assertion below.
+        run: |
+          set +e
+          bash formal/verify.sh 2>&1 | tee /tmp/verify.log
+          echo "verify_exit=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+
+      - name: Enforce verify.sh exit 0
+        if: always()
+        run: |
+          echo "verify.sh exit code: ${verify_exit}"
+          test "${verify_exit}" = "0"
+
+      - name: Enforce 0 sorry / 0 axiom
+        # Belt-and-suspenders: verify.sh already exits 1 on sorry/axiom
+        # regression via its own FAIL=1 logic. This step re-asserts the
+        # machine-readable counts so a regression surfaces in the CI log
+        # by name (not just as a generic verify.sh failure).
+        if: always()
+        run: |
+          sorry=$(grep -E '^sorry count:' /tmp/verify.log | awk '{print $3}')
+          axiom=$(grep -E '^axiom count:' /tmp/verify.log | awk '{print $3}')
+          echo "parsed sorry count: ${sorry:-<line missing>}"
+          echo "parsed axiom count: ${axiom:-<line missing>}"
+          test "${sorry}" = "0"
+          test "${axiom}" = "0"
+
+  python:
+    name: Python (tests + ruff + mypy)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 = floor (Claude Code on older distros; `from __future__ import
+        # annotations` keeps `dict[str, Any]` lazy so the hook runs there).
+        # 3.13 = modern (most operator machines). Mirrors the mcp-lint
+        # matrix discipline.
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
+
+      - name: ruff check
+        working-directory: python
+        run: ruff check hook.py tests
+
+      - name: ruff format --check
+        working-directory: python
+        run: ruff format --check hook.py tests
+
+      - name: mypy --strict
+        # Explicit file list (no __init__.py in tests/) — mypy treats each
+        # as a separate module. Strict typing catches Python/Lean contract
+        # divergence at dev time.
+        working-directory: python
+        run: mypy --strict hook.py tests/test_hook.py tests/test_hook_bypasses.py
+
+      - name: pytest
+        working-directory: python
+        run: python -m pytest -q
+
+      - name: Gate spot-check (byte-identical v0.2 behavior)
+        # Belt-and-suspenders: pytest already covers 63 cases, but a future
+        # refactor could shift the gate's stderr format and a test could
+        # be edited to match. This step pins the three-load-bearing exit
+        # codes — traversal blocks (2), legit /tmp allows (0) — directly,
+        # so a behavior change to the gate logic surfaces before release.
+        working-directory: python
+        run: |
+          set -e
+          traversal_payload='{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/../etc/passwd","content":"x"}}'
+          legit_payload='{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/tmp/x","content":"x"}}'
+
+          traversal_exit=$(printf '%s' "$traversal_payload" | python hook.py 2>/dev/null; echo $?)
+          legit_exit=$(printf '%s' "$legit_payload" | python hook.py 2>/dev/null; echo $?)
+
+          echo "traversal /tmp/../etc/passwd -> exit $traversal_exit (expect 2)"
+          echo "legit    /tmp/x              -> exit $legit_exit (expect 0)"
+
+          test "$traversal_exit" = "2"
+          test "$legit_exit" = "0"
