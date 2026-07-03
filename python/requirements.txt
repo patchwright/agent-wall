@@ -1,0 +1,8 @@
+# Pinned tooling for the agent-wall Python hook.
+# CI installs from this file; locally, any pytest>=8 / ruff>=0.12 / mypy>=1.16
+# works. Pins match the versions the v0.2.1 hardening pass was tested against
+# so a future regression on a tooling-breaking release fails loudly here,
+# not silently in main.
+pytest>=8,<9
+ruff>=0.12,<0.13
+mypy>=1.16,<1.17

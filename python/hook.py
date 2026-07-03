@@ -66,7 +66,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Deterministic signature + path policy.
@@ -145,9 +145,11 @@ ALLOWED_ROOTS: tuple[str, ...] = (
 # Pure decision logic
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Decision:
     """Mirrors `AgentWall.Decision`."""
+
     allow: bool
     reason: str = ""
 
@@ -295,6 +297,7 @@ def _bash_writes_into_forbidden(cmd: str) -> str | None:
 # "pure function of inputs" contract. Module-level constants restore it.
 # ---------------------------------------------------------------------------
 
+
 def _flag(name: str, default: bool = True) -> bool:
     v = os.environ.get(name)
     if v is None:
@@ -335,7 +338,9 @@ def gate(tool_name: str, tool_input: dict[str, Any]) -> Decision:
     """
     # Condition 1: allowlisted tool.
     if not tool_allowed(tool_name):
-        return Decision(False, f"tool '{tool_name}' not on allowlist {sorted(ALLOWED_TOOLS)}")
+        return Decision(
+            False, f"tool '{tool_name}' not on allowlist {sorted(ALLOWED_TOOLS)}"
+        )
 
     # Condition 2 (Bash): no exfiltration signature in the command.
     if tool_name == "Bash":
@@ -364,7 +369,10 @@ def gate(tool_name: str, tool_input: dict[str, Any]) -> Decision:
         if is_forbidden_path(raw_path):
             return Decision(False, f"write to forbidden path {raw_path!r}")
         if is_forbidden_path(norm_path):
-            return Decision(False, f"write to forbidden path {norm_path!r} (resolved from {raw_path!r})")
+            return Decision(
+                False,
+                f"write to forbidden path {norm_path!r} (resolved from {raw_path!r})",
+            )
 
         # v0.2 invariant #1 — AllowlistedPaths: target must be under an
         # operator-blessed root. This is the positive-list dual of condition 3.
@@ -382,7 +390,11 @@ def gate(tool_name: str, tool_input: dict[str, Any]) -> Decision:
     # and remaining budget (no Claude Code tool does this natively today; the
     # PoC accepts the fields for composability with future spend-tracking
     # adapters), the spend gate runs. Mirrors `AgentWall.BoundedSpend.spendGate`.
-    if SPEND_ENABLED and "declared_cost" in tool_input and "remaining_budget" in tool_input:
+    if (
+        SPEND_ENABLED
+        and "declared_cost" in tool_input
+        and "remaining_budget" in tool_input
+    ):
         try:
             cost = int(tool_input["declared_cost"])
             budget = int(tool_input["remaining_budget"])
@@ -404,6 +416,7 @@ def gate(tool_name: str, tool_input: dict[str, Any]) -> Decision:
 # ---------------------------------------------------------------------------
 # PreToolUse hook entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> int:
     raw = sys.stdin.read()

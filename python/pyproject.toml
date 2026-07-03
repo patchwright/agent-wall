@@ -1,0 +1,39 @@
+# Python tooling config for the agent-wall PreToolUse hook.
+# This is NOT a packaged distribution (the hook ships as a single script
+# per Claude Code's PreToolUse contract); the config here exists so
+# `ruff check`, `ruff format --check`, and `mypy --strict` are reproducible
+# in CI and locally. Mirrors the mcp-lint tooling discipline without the
+# packaging surface.
+#
+# Run from this directory:
+#   ruff check hook.py tests
+#   ruff format --check hook.py tests
+#   mypy --strict hook.py tests/test_hook.py tests/test_hook_bypasses.py
+
+[tool.ruff]
+# 3.9 floor: the hook must run on whatever Python the operator's Claude
+# Code host ships (Ubuntu 22.04 = 3.10, Debian stable = 3.11, macOS = 3.13).
+# `from __future__ import annotations` keeps `dict[str, Any]` lazy so the
+# script runs on 3.9+; ruff must not suggest newer syntax.
+target-version = "py39"
+line-length = 88
+
+[tool.ruff.lint]
+# Default ruff selection (E4, E7, E9, F) — catches the F401 unused-import
+# class that bit us before (Callable was imported but never used) without
+# turning on opinionated style rules that would churn the source.
+# Add rule prefixes here only with a conscious reason.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.format]
+# Defaults. `--check` runs in CI; `ruff format` (no --check) rewrites.
+
+[tool.mypy]
+# Strict from day one — the gate's value depends on the Python matching
+# the Lean contract; strict typing catches divergence at dev time.
+strict = true
+python_version = "3.9"
+# Tests legitimately use subprocess.run with capture_output=True (returns
+# Any on the .stdout/.stderr attribute without strict typing); we annotate
+# run_hook's return type, so disallow_untyped_defs stays useful here.
+warn_unreachable = true

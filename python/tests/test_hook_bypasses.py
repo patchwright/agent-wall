@@ -32,6 +32,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -39,7 +40,7 @@ HOOK = Path(__file__).resolve().parent.parent / "hook.py"
 assert HOOK.exists(), f"hook.py not found at {HOOK}"
 
 
-def run_hook(payload: dict) -> tuple[int, str, str]:
+def run_hook(payload: dict[str, Any]) -> tuple[int, str, str]:
     """Run the hook on a payload; return (exit_code, stdout, stderr)."""
     proc = subprocess.run(
         [sys.executable, str(HOOK)],
@@ -51,7 +52,7 @@ def run_hook(payload: dict) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def _write(file_path: str, **extra) -> dict:
+def _write(file_path: str, **extra: Any) -> dict[str, Any]:
     payload = {
         "session_id": "test-session",
         "hook_event_name": "PreToolUse",
@@ -61,7 +62,7 @@ def _write(file_path: str, **extra) -> dict:
     return payload
 
 
-def _bash(command: str, **extra) -> dict:
+def _bash(command: str, **extra: Any) -> dict[str, Any]:
     return {
         "session_id": "test-session",
         "hook_event_name": "PreToolUse",
@@ -81,20 +82,24 @@ def _bash(command: str, **extra) -> dict:
 # traversal regression has been introduced.
 # ===========================================================================
 
-@pytest.mark.parametrize("path,expected_resolved", [
-    # The exact reproduction from the adversarial review.
-    ("/tmp/../etc/passwd", "/etc/passwd"),
-    # Doubled traversal — collapses outside /tmp/.
-    ("/tmp/foo/../../etc/passwd", "/etc/passwd"),
-    # Triple traversal to be sure.
-    ("/tmp/a/b/../../../etc/passwd", "/etc/passwd"),
-    # /var/tmp traversal to /etc.
-    ("/var/tmp/../etc/shadow", "/etc/shadow"),
-    # Traversal into a forbidden-path substring — the raw `.ssh/` substring
-    # is matched on the RAW form (defense-in-depth: the substring denylist
-    # checks raw AND normalized), so the block reason shows the raw path.
-    ("/home/u/.ssh/../authorized_keys", "/home/u/.ssh/../authorized_keys"),
-])
+
+@pytest.mark.parametrize(
+    "path,expected_resolved",
+    [
+        # The exact reproduction from the adversarial review.
+        ("/tmp/../etc/passwd", "/etc/passwd"),
+        # Doubled traversal — collapses outside /tmp/.
+        ("/tmp/foo/../../etc/passwd", "/etc/passwd"),
+        # Triple traversal to be sure.
+        ("/tmp/a/b/../../../etc/passwd", "/etc/passwd"),
+        # /var/tmp traversal to /etc.
+        ("/var/tmp/../etc/shadow", "/etc/shadow"),
+        # Traversal into a forbidden-path substring — the raw `.ssh/` substring
+        # is matched on the RAW form (defense-in-depth: the substring denylist
+        # checks raw AND normalized), so the block reason shows the raw path.
+        ("/home/u/.ssh/../authorized_keys", "/home/u/.ssh/../authorized_keys"),
+    ],
+)
 def test_PathTraversal_write_is_blocked(path: str, expected_resolved: str) -> None:
     """
     Regression guard: `Write` to a traversal-laden path MUST be blocked
@@ -181,6 +186,7 @@ def test_PathTraversal_normalized_path_message_is_honest() -> None:
 # (move it to a regression-guard group).
 # ===========================================================================
 
+
 def test_KnownOpenBypass_whitespace_exfil_signature() -> None:
     """
     KNOWN OPEN (README §"Known bypasses"): the exfil signature requires
@@ -247,7 +253,7 @@ def test_KnownOpenBypass_python_dash_c_arbitrary_code() -> None:
     untrusted inputs to sinks (DESIGN.md §4 item 9: sink-bounded-data-
     flow), which is v0.3 scope.
     """
-    code, _, _ = run_hook(_bash('python3 -c "import os; os.system(\'echo owned\')"'))
+    code, _, _ = run_hook(_bash("python3 -c \"import os; os.system('echo owned')\""))
     assert code == 0, (
         "python3 -c SINK CLOSED: update README §'Known bypasses' and flip "
         "this assertion to exit 2."
