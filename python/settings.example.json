@@ -1,0 +1,16 @@
+{
+  "_comment": "Drop the 'hooks' block below into your project's .claude/settings.json (or ~/.claude/settings.json for global). Adjust the command path to point at your agent-wall checkout. This is the integration snippet for the v0.1 PoC.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /abs/path/to/agent-wall/python/hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

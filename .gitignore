@@ -1,0 +1,21 @@
+# Lean build artifacts
+formal/lean/.lake/
+formal/lean/build/
+*.olean
+*.ilean
+*.c.trace
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.python-version
+.venv/
+venv/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

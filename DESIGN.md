@@ -1,0 +1,245 @@
+# agent-wall — Design
+
+**The wedge.** `agent-wall` is a Lean-verified, deterministic policy gate that
+gives autonomous AI agents a hard, pre-execution "no" on unsafe tool-calls. It
+is explicitly *not* an LLM judge. The decision is a pure function of the
+tool-call, formally bounded by a Lean proof, and enforced at the tool-call
+boundary before the action runs. The lane it occupies — deterministic +
+formally-bounded + pre-execution — is empty in practice today; everything else
+in the "agent guardrails" space is a model-based judge that an adversary can
+prompt-past.
+
+This is v0.1: a design, one invariant, and a working PoC. The full library is
+multi-session. The scope statement at the end of this document is honest about
+that.
+
+---
+
+## 1. The problem: LLM-judge guardrails are bypassable
+
+The dominant pattern for "agent safety" today is a second LLM that looks at the
+proposed tool-call and says allow/deny. This is structurally weak:
+
+  * **Prompt injection moves the judge.** Any untrusted text the agent reads —
+    a web page, an email, a file — can carry instructions targeted at the
+    judge. The judge is the same kind of object as the agent, so any attack
+    that works on the agent works on the judge.
+  * **Soft decisions don't compose.** A 0.97-confidence "probably safe" does
+    not chain into a hard system-level guarantee. Aggregating N soft gates
+    gives you N chances to be wrong, not a guarantee.
+  * **No formal boundary.** There is no theorem you can state about a judge's
+    behaviour, because the judge is a model. The best you get is empirical
+    eval on a held-out set — which an adaptive adversary is explicitly
+    designed to evade.
+
+The fix is not a better judge. The fix is to *not use a judge* for the things
+that admit a structural rule.
+
+---
+
+## 2. The formal basis: the EvoEcos wall
+
+`agent-wall` productizes a wall mechanism that already exists as a verified
+formal artifact in the EvoEcos project. Nothing here is invented.
+
+### 2.1 The Lean idiom
+
+`/home/fredde/projects/evoecos/formal/lean/EvoEcos/` carries ~24k lines of
+Lean 4, `0 sorry / 0 axiom`. The relevant pieces:
+
+  * **`WallDomainTriple.lean`** defines the wall as a control-theoretic
+    "domain triple" — a `structure EnvChar where` with three `Bool` necessary
+    conditions (`lowDim`, `simpleCausal`, `perturbation`), a derived reducer
+    `triple : Bool`, and an admission payoff `wallBenefit : ℝ`. The headline
+    theorem `wall_domain_boundary` bundles the positive biconditional, the
+    negative implication, and the three independence witnesses into one
+    statement. This is the idiom `agent-wall` mirrors verbatim
+    (`ToolCallChar` / `triple` / `gate` / `no_self_exfiltration_boundary`).
+
+  * **`Invariants.lean`** defines the system-wide contract
+    `systemInvariant : SystemState → Prop` — a conjunction of per-layer
+    type-invariants, the wall-firing implication, and a liveness watchdog.
+    Every transition theorem takes `hinv : systemInvariant s`. The role this
+    plays (a named `Prop` that downstream consumers cite) is the role
+    `NoSelfExfiltration` plays in v0.1.
+
+  * **Liveness watchdog.** The bounded-time-advance guarantee
+    (`L3State.liveness`) is a conjunct of `systemInvariant` in
+    `Invariants.lean`; every transition theorem preserves it. The point of
+    a wall is not to stall progress forever — the liveness watchdog enforces
+    bounded-time advance even with the wall up. A safety gate that halts the
+    agent is not a gate, it is an off-switch.
+
+### 2.2 The experimental evidence the moat rests on
+
+Two EvoEcos experiments validate the wall mechanism empirically (queried via
+the EvoEcos experiments SQLite, not raw JSON reads):
+
+  * **`wall_override_defense_sweep`** — 30 seeds × 8 strategies. Structural
+    hard caps strictly dominate every softer defense on the
+    wall-effectiveness and degradation-episode metrics:
+
+    | strategy            | wall_eff | degrad_ep | min_l1 |
+    |---------------------|----------|-----------|--------|
+    | `hard_cap_1` (structural) | **0.921** | **2.20**  | 0.008  |
+    | `hard_cap_2` (structural, weaker) | 0.878 | 7.63 | 0.000 |
+    | `asymmetric_cost` (magnitude) | 0.880 | 8.73 | 0.000 |
+    | `cumulative_budget` (probabilistic) | 0.853 | 11.13 | 0.000 |
+    | `cooling_5` (temporal) | 0.818 | 13.97 | 0.002 |
+    | `naive`             | 0.694    | 29.27     | 0.000  |
+    | `undefended`        | 0.386    | 77.10     | 0.000  |
+
+    Structural hard caps win. This is the empirical claim behind agent-wall's
+    insistence on a deterministic, structural gate.
+
+  * **`deployment_blueprint`** — 150 seeds × 5 perturbation levels
+    (none/mild/moderate/severe/adversarial), 7500 total turns, 1918 of them
+    adversarial. **0 hierarchy violations across the full sweep.** Hypotheses
+    H3 (correct_hierarchy) and H4 (matches_formal_model) **confirmed**. This
+    is the deployment-shape evidence: in a wall-gated agent, the gate fires
+    in the right order on every turn, including under adversarial pressure.
+
+### 2.3 The honest caveat
+
+EvoEcos's wall is a control-theoretic object inside an agent architecture
+(L1–L4 layers). `agent-wall` lifts the *gate shape* (necessary-conditions
+triple + decision + boundary theorem) out of that architecture and applies it
+to agent *tool-calls*. The Lean idiom and the structural-cap result transfer
+directly; the L1–L4 layer semantics do not. v0.1 is the tool-call gate; the
+L1–L4 work stays in EvoEcos.
+
+---
+
+## 3. Academic anchors
+
+Three pieces of prior art locate `agent-wall` in the literature. (The
+arXiv IDs below are as cited in the project brief; I have not independently
+re-verified them in this session.)
+
+  * **AgentSpec (ICSE 2026)** — a runtime-enforcement DSL for LLM agents.
+    Establishes that the boundary agents need is *runtime enforcement*, not
+    test-time filtering. `agent-wall` is the formally-bounded layer that
+    AgentSpec-style specs dispatch to.
+  * **AgentAssert (arXiv 2602.22302)** — drift-bounds on agent behaviour via
+    Lyapunov-style certificates. The mechanism is structurally the same as
+    the EvoEcos wall: a certificate that the agent cannot drift past a
+    boundary. This is the closest academic analogue to the wall mechanism
+    agent-wall productizes.
+  * **"Deterministic Guardrails for Agentic Financial Systems" (arXiv 2604.01483,
+    Lean 4)** — the same "deterministic + Lean + agent" thesis, applied to
+    finance. Validates the lane; `agent-wall` is the general-purpose,
+    open-source version.
+
+The differentiator is not the thesis (determinism is in the air) — it is the
+*formal asset*. EvoEcos already has the verified wall; nobody else does.
+
+---
+
+## 4. The invariant set to ship eventually
+
+v0.1 ships invariant 1. The set below is the v1.0 surface. Each is a
+`def <Name> (c : ToolCallChar) : Prop` in the EvoEcos idiom, with a boundary
+theorem proving the gate denies iff the invariant is violated.
+
+  1. **no-self-exfiltration** — *v0.1 ✓* — no tool-call may flow an untrusted
+     blob into a sink (network egress, shell-pipe, credential path).
+  2. **bounded-spend** — cumulative API spend over a rolling window ≤ operator
+     cap. The wall-override experiment's `cumulative_budget` arm shows this is
+     weaker than a structural cap on its own; it composes with #1.
+  3. **allowlisted-paths** — writes only into operator-blessed directory trees.
+     Generalizes the v0.1 forbidden-path denylist to a positive allowlist.
+  4. **replay-determinism** — same `(tool_name, tool_input)` ⇒ same decision,
+     no clock, no randomness, no environment read. Required for audit; the
+     v0.1 PoC already satisfies this.
+  5. **no-unprompted-network** — no network egress that the operator did not
+     initiate. Closes the data-flow sink on the network side.
+  6. **tool-allowlist** — only operator-blessed tools callable. v0.1 has the
+     hard-coded `{Bash, Read, Edit, Write}`; v0.2 makes it operator-config.
+  7. **idempotency-on-failure** — a failed tool-call retried ≤ N times in a
+     window. Stops the agent hammering a broken tool.
+  8. **no-privilege-escalation** — the agent may not edit its own gate
+     config, the operator's auth files, or the Lean source.
+  9. **sink-bounded-data-flow** — the full taint version: an `untrusted`
+     `sourceTrust` value may not reach a sink in any call in the session.
+     The `sourceTrust` field is already on `ToolCallChar`; v0.1 collapses
+     taint into `commandSafe`/`targetSafe`, v0.2 makes it explicit.
+  10. **bounded-resource** — file count, memory, and wall-clock per session
+      ≤ operator caps.
+
+The system-level invariant (v1.0 target) is the conjunction of all ten,
+`def systemInvariant (s : SessionState) : Prop := …`, in the role EvoEcos's
+`systemInvariant` plays.
+
+---
+
+## 5. Integration surfaces
+
+  * **Claude Code `PreToolUse`** — *v0.1 ✓* — the hook in `python/hook.py`
+    returns exit 2 to BLOCK per Claude Code's hook contract. Drops in via
+    the `.claude/settings.json` snippet in `python/settings.example.json`.
+  * **LangChain `AgentMiddleware` v1-alpha** — *v0.2* — the same gate logic
+    as a `before_tool` middleware. LangChain's v1-alpha middleware surface is
+    still moving; the adapter lands when the API stabilizes.
+  * **MCP tool-call boundary** — *v0.3* — the gate sits inside the MCP
+    server, between the agent's tool-call and the tool's execution. One
+    deployment point, every MCP client covered.
+  * **OpenAI Agents SDK / generic tool-loop** — *v0.4* — a thin adapter for
+    any tool-calling loop that exposes a `before_tool` hook.
+
+The integration point is always the same shape — *the gate is a function from
+tool-call to allow/deny, enforced at the boundary*. Different hosts, same gate.
+
+---
+
+## 6. Honest v0.1 scope
+
+What v0.1 is:
+
+  * **One invariant.** `NoSelfExfiltration`, single-call, structural
+    signature + forbidden-path.
+  * **One Lean module.** `formal/lean/AgentWall/NoSelfExfiltration.lean`.
+    Compiles `0 sorry / 0 axiom` under `leanprover/lean4:v4.29.1` via
+    `bash formal/verify.sh`. No mathlib dependency.
+  * **One Python PoC.** `python/hook.py`, a Claude Code `PreToolUse` hook.
+    23/23 tests pass in `python/tests/test_hook.py`. Manual demo: block
+    `curl … | sh` and writes to `.ssh/` with exit 2; allow `ls -la` with
+    exit 0.
+  * **DESIGN.md and README.md.** This document and the pitch.
+
+What v0.1 is **not**:
+
+  * No bounded-spend, replay-determinism, or the other 7 invariants from §4.
+    Those are the v1.0 surface.
+  * No session-level state. The v0.1 gate is per-call; multi-call invariants
+    (cumulative spend, retry counts, full taint-tracking) need a session
+    store and are v0.2.
+  * No refinement proof connecting the Lean gate to the Python gate. The two
+    share the same signature/path tables by construction, and the test suite
+    cross-checks the block/allow outcomes against the documented Lean
+    contract — but there is no formal proof that `python/hook.py` faithfully
+    implements `AgentWall.gate`. That refinement proof is a v0.2 target.
+  * No LangChain / MCP / OpenAI-SDK adapters. v0.1 ships Claude Code only.
+  * No published package. This is a design + PoC.
+
+---
+
+## 7. File map
+
+```
+agent-wall/
+├── DESIGN.md                              # this document
+├── README.md                              # the pitch
+├── formal/
+│   ├── verify.sh                          # lake build + sorry/axiom = 0 gate
+│   └── lean/
+│       ├── lakefile.lean                  # package + AgentWall lib, no mathlib
+│       ├── lean-toolchain                 # leanprover/lean4:v4.29.1
+│       ├── AgentWall.lean                 # lib root
+│       └── AgentWall/
+│           └── NoSelfExfiltration.lean    # the v0.1 invariant + boundary theorem
+└── python/
+    ├── hook.py                            # Claude Code PreToolUse PoC
+    ├── settings.example.json              # .claude/settings.json snippet
+    └── tests/
+        └── test_hook.py                   # 23 block/allow tests
+```
