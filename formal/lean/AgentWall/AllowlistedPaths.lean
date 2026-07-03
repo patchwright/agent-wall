@@ -18,7 +18,7 @@ Mirrors the EvoEcos `WallDomainTriple` idiom: `structure` → `triple` →
 independence witnesses) → named `Prop` predicate → soundness bridge.
 -/
 
-open AgentWall (Decision)
+open AgentWall (Decision containsSubstr)
 
 namespace AgentWall.AllowlistedPaths
 
@@ -50,9 +50,46 @@ def ALLOWED_ROOTS : List String :=
   ["/tmp/", "/home/user/", "/home/fredde/", "/var/tmp/"]
 
 /--
+Lexical path-normalization precondition.
+
+A path is `isNormalizedPath` iff it contains no parent-traversal (`/..`)
+or current-dir (`/.`) segment after a path separator. This is the
+Lean-side shadow of the Python layer's `os.path.realpath()` normalization
+step: the Python gate in `python/hook.py` resolves every write target
+through `realpath` BEFORE invoking `isAllowlistedPath`, so the Lean
+predicate is only ever evaluated on normalized input in deployment.
+
+`isAllowlistedPath` and the boundary theorem below do NOT model path
+traversal in isolation: a literal string like `/tmp/../etc/passwd`
+satisfies the `/tmp/` prefix test and would be ADMITTED by the Lean
+predicate alone. The traversal-resistance property is therefore a
+property of the COMPOSITION (Python realpath layer ∘ Lean allowlist
+predicate), not of the Lean predicate in isolation. Consumers of this
+invariant MUST pair it with the Python normalization layer (or an
+equivalent); see the `Known bypasses` section of README.md.
+
+Full POSIX path normalization (symlink resolution, etc.) is enforced at
+the Python layer; the Lean side models the lexical fragment that makes
+the boundary theorem honest about what it assumes. The reviewer's
+reproduction (`Write /tmp/../etc/passwd` was admitted by the prefix
+predicate alone) is closed by the Python `realpath` step, and the
+`isNormalizedPath` predicate + the `pathGate_deny_of_normalized_path_not_allowed`
+corollary below make that pairing explicit in the formal artifact.
+-/
+def isNormalizedPath (p : String) : Bool :=
+  ¬ (containsSubstr "/.." p || containsSubstr "/./" p)
+
+/--
 A path is allowlisted iff it starts with one of the allowed roots.
 The use of `String.startsWith` (not substring) makes this a strict prefix
 test; the conservative direction for an allowlist.
+
+PRECONDITION: `p` should be realpath-normalized before this predicate is
+evaluated. `isAllowlistedPath` does NOT model path traversal on its own
+— `/tmp/../etc/passwd` would pass the `/tmp/` prefix test. The Python
+layer enforces the precondition via `os.path.realpath()`; see
+`isNormalizedPath` above and `pathGate_deny_of_normalized_path_not_allowed`
+below.
 -/
 def isAllowlistedPath (p : String) : Bool :=
   ALLOWED_ROOTS.any (fun r => p.startsWith r)
@@ -128,6 +165,37 @@ theorem pathGate_deny_of_path_not_allowed (c : PathCallChar)
     (h : pathAllowed c = false) :
     pathGate c = Decision.Deny :=
   pathGate_deny_of_triple_false c (pathTriple_false_of_path_not_allowed c h)
+
+/--
+Traversal-resistance corollary (REQUIRES the normalization precondition).
+
+This is the honest statement of the security claim that downstream
+consumers actually want: "an attacker cannot reach a non-allowlisted
+target via path traversal." It is contingent on the Python `realpath`
+normalization layer firing first — hence the explicit `h_norm` hypothesis
+in the type, so any consumer citing this corollary sees the precondition.
+
+Without `h_norm`, the claim is FALSE: `/tmp/../etc/passwd` satisfies
+`isAllowlistedPath` (prefix match on `/tmp/`) but its realpath form
+`/etc/passwd` is outside every allowed root. The Python layer
+(`python/hook.py`, `_normalize_path`) enforces `h_norm` for every call
+that reaches the gate; this corollary states what the COMPOSITION
+(Python realpath ∘ Lean allowlist) delivers, not what the Lean predicate
+delivers alone.
+
+The proof reduces to the existing `pathGate_deny_of_path_not_allowed`
+because the hypothesis is not needed for the implication itself (the
+predicate's behaviour is fully specified without it) — the leading
+underscore on `_h_norm` is the Lean 4 convention for an intentionally-
+unused hypothesis name; the hypothesis is carried in the type so the
+precondition is visible at citation sites and in the docstring above,
+not because the proof tactic depends on it.
+-/
+theorem pathGate_deny_of_normalized_path_not_allowed (c : PathCallChar)
+    (_h_norm : isNormalizedPath c.targetPath = true)
+    (h_not_allowed : pathAllowed c = false) :
+    pathGate c = Decision.Deny :=
+  pathGate_deny_of_path_not_allowed c h_not_allowed
 
 /--
 The v0.2 boundary theorem for the path-allowlist invariant. Bundles the

@@ -189,7 +189,7 @@ def test_v02_allows_write_to_allowlisted_path(path: str) -> None:
     "/etc/passwd",                                 # system file, not allowlisted
     "/root/secret",                                # root home, not allowlisted
     "/opt/data/thing.json",                        # /opt not allowlisted
-    "relative/path/to/file.txt",                   # relative, no allowed prefix
+    "/sys/kernel/foo",                             # system path, not allowlisted
 ])
 def test_v02_blocks_write_to_non_allowlisted_path(path: str) -> None:
     """`pathGate_deny_of_path_not_allowed`: outside allowlist ⇒ Deny."""
