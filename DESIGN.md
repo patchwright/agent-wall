@@ -228,10 +228,12 @@ What v0.2 is:
     `leanprover/lean4:v4.29.1` via `bash formal/verify.sh`. No mathlib
     dependency.
   * **One Python PoC.** `python/hook.py`, a Claude Code `PreToolUse` hook.
-    50/50 tests pass in `python/tests/test_hook.py`, spanning all four
-    invariants (block + allow cases each). Manual demo: block `curl … | sh`
-    and writes to `.ssh/` with exit 2; block writes outside the allowlist;
-    block over-budget calls; allow `ls -la` with exit 0.
+    63 tests pass across `python/tests/test_hook.py` (block + allow for all
+    four invariants) and `python/tests/test_hook_bypasses.py` (13 adversarial:
+    path-traversal regression guards + documented known-open bypasses). Manual
+    demo: block `curl … | sh` and writes to `.ssh/` with exit 2; block writes
+    outside the allowlist (incl. traversal like `/tmp/../etc/passwd`); block
+    over-budget calls; allow `ls -la` with exit 0.
   * **DESIGN.md and README.md.** This document and the pitch.
 
 What v0.2 is **not**:
