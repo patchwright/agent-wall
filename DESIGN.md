@@ -1,15 +1,28 @@
 # agent-wall — Design
 
-**The wedge.** `agent-wall` is a Lean-verified, deterministic policy gate that
-gives autonomous AI agents a hard, pre-execution "no" on unsafe tool-calls. It
-is explicitly *not* an LLM judge. The decision is a pure function of the
-tool-call, formally bounded by a Lean proof, and enforced at the tool-call
-boundary before the action runs. The lane it occupies — deterministic +
-formally-bounded + pre-execution — is empty in practice today; everything else
-in the "agent guardrails" space is a model-based judge that an adversary can
-prompt-past.
+**The wedge.** `agent-wall` is a deterministic first-layer policy gate with
+Lean-checked decision structure, giving autonomous AI agents a pre-execution
+"no" on a known set of unsafe tool-calls. It is explicitly *not* an LLM judge.
+The decision is a pure function of the tool-call over a frozen startup config,
+structurally bounded, and enforced at the tool-call boundary before the action
+runs. The lane it occupies — deterministic + structurally-bounded +
+pre-execution — is sparse in practice today; everything else in the "agent
+guardrails" space is a model-based judge that an adversary can prompt-past.
 
-This is **v0.2**: four Lean-verified invariants (one carried from v0.1, three
+**What "Lean-checked" means here (honest scope).** The Lean proofs verify the
+gate's *decision structure*: `gate = Allow ↔ triple = true`, `triple = false
+→ gate = Deny`, the `BoundedSpend` inequality, and the `ReplayDeterminism`
+functional-extensionality equation. They do NOT prove that the exfiltration
+signatures are exhaustion-proof or that the allowlist is unobsfucatable —
+both are bypassable on the open surface (see README §"Known bypasses" for
+the closed/open inventory, regressed in `python/tests/test_hook_bypasses.py`).
+The Lean `AllowlistedPaths.isAllowlistedPath` predicate does NOT model path
+traversal on its own; traversal-resistance is a property of the COMPOSITION
+(Python `realpath` layer ∘ Lean allowlist predicate), made explicit in the
+Lean via the `isNormalizedPath` precondition and the
+`pathGate_deny_of_normalized_path_not_allowed` corollary.
+
+This is **v0.2**: four Lean-checked invariants (one carried from v0.1, three
 new), a Python PoC that enforces all four at the PreToolUse boundary, and this
 design document. The full library is multi-session. The scope statement at the
 end of this document is honest about that.
@@ -228,6 +241,21 @@ What v0.2 is **not**:
     `idempotency-on-failure`, `no-privilege-escalation`,
     `sink-bounded-data-flow`, `bounded-resource`). Those are the v1.0
     surface.
+  * Not exhaustion-proof on signatures. The exfil signature table is a fixed
+    substring list; an adversarial review (5.5/10) confirmed multiple open
+    bypasses (whitespace variants, download-then-run, nested shells,
+    `python3 -c "..."`). See README §"Known bypasses" for the precise
+    closed/open inventory, regressed in `python/tests/test_hook_bypasses.py`.
+    The Lean proofs verify the gate's decision structure, NOT that the
+    signatures are unobsfucatable.
+  * Not a complete path-traversal defense in the Lean layer alone. The Lean
+    `AllowlistedPaths.isAllowlistedPath` predicate is a pure prefix test on
+    `String` and does not model traversal; traversal-resistance is a property
+    of the COMPOSITION (Python `realpath` layer ∘ Lean allowlist predicate).
+    The Lean `isNormalizedPath` precondition and the
+    `pathGate_deny_of_normalized_path_not_allowed` corollary make the
+    pairing explicit; the Python layer (`_normalize_path`) enforces the
+    precondition for every write/edit call.
   * No session-level state. The v0.2 gate is per-call; multi-call invariants
     (rolling-window spend, retry counts, full taint-tracking) need a session
     store and are v0.3. `BoundedSpend` ships the per-call atomic check; the
@@ -264,5 +292,6 @@ agent-wall/
     ├── hook.py                            # Claude Code PreToolUse PoC (all 4 invariants)
     ├── settings.example.json              # .claude/settings.json snippet
     └── tests/
-        └── test_hook.py                   # 50 block/allow tests
+        ├── test_hook.py                   # block/allow + replay-determinism tests
+        └── test_hook_bypasses.py          # adversarial: traversal guards + known-open surface
 ```
