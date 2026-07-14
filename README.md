@@ -6,7 +6,7 @@
 > see [§Known bypasses](#known-bypasses).
 
 `agent-wall` lifts the "wall" mechanism — a deterministic safety-gate
-pattern from the [EvoEcos](https://github.com/ruvnet/evoecos) project — out
+pattern from the EvoEcos project (a private research codebase) — out
 of its original control-theory setting and applies it to agent tool-calls.
 The decision is a pure function of the tool-call over a frozen startup
 config, structurally bounded, and enforced at the tool-call boundary before

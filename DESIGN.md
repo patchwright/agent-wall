@@ -58,7 +58,7 @@ formal artifact in the EvoEcos project. Nothing here is invented.
 
 ### 2.1 The Lean idiom
 
-`/home/fredde/projects/evoecos/formal/lean/EvoEcos/` carries ~24k lines of
+EvoEcos's `formal/lean/EvoEcos/` tree carries ~24k lines of
 Lean 4, `0 sorry / 0 axiom`. The relevant pieces:
 
   * **`WallDomainTriple.lean`** defines the wall as a control-theoretic
