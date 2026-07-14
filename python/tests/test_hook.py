@@ -203,7 +203,7 @@ def test_empty_tool_input_still_allows_for_bash_with_empty_command() -> None:
         "/tmp/hello.txt",  # /tmp/ root
         "/tmp/nested/dir/file.txt",  # nested under /tmp/
         "/home/user/repo/src/main.py",  # /home/user/ root
-        "/home/fredde/projects/x/marker.txt",  # /home/fredde/ root
+        "/home/operator/projects/x/marker.txt",  # /home/operator/ root
         "/var/tmp/build.log",  # /var/tmp/ root
     ],
 )
@@ -377,7 +377,7 @@ def test_v02_spend_skipped_when_tool_input_does_not_declare_it() -> None:
         },
         {
             "tool_name": "Write",
-            "tool_input": {"file_path": "/home/fredde/repo/file.txt", "content": "x"},
+            "tool_input": {"file_path": "/home/operator/repo/file.txt", "content": "x"},
         },
         {
             "tool_name": "Write",

@@ -47,7 +47,7 @@ is a v0.3 target (and the v0.1 DESIGN.md §4 documents `allowlisted-paths`
 item 3 with this scope).
 -/
 def ALLOWED_ROOTS : List String :=
-  ["/tmp/", "/home/user/", "/home/fredde/", "/var/tmp/"]
+  ["/tmp/", "/home/user/", "/home/operator/", "/var/tmp/"]
 
 /--
 Lexical path-normalization precondition.

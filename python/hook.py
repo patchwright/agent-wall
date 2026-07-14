@@ -136,7 +136,7 @@ FORBIDDEN_PATH_REDIRECT = (">", ">>", "tee ")
 ALLOWED_ROOTS: tuple[str, ...] = (
     "/tmp/",
     "/home/user/",
-    "/home/fredde/",
+    "/home/operator/",
     "/var/tmp/",
 )
 
