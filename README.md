@@ -277,4 +277,4 @@ No published package. Use it, fork it, or wait for v0.3.
 
 ## License
 
-TBD (will be MIT or Apache-2.0 on first release).
+MIT — see [LICENSE](LICENSE).
