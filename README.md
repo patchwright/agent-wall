@@ -1,5 +1,7 @@
 # agent-wall
 
+*Part of [patchwright](https://github.com/patchwright/patchwright) — not affiliated with [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright), an unrelated browser-automation project.*
+
 > A deterministic first-layer policy gate with Lean-checked decision
 > structure, giving autonomous AI agents a pre-execution "no" on a known
 > set of unsafe tool-calls. **Not an LLM judge.** Not exhaustion-proof —
